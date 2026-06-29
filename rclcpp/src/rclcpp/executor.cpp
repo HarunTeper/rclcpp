@@ -954,6 +954,11 @@ Executor::get_next_ready_executable(AnyExecutable & any_executable)
           // Retain a ready-but-blocked mutually-exclusive timer so it is re-offered
           // once the group frees, instead of being lost when the wait result is reset.
           if (is_mutually_exclusive) {
+            // Clear the timer from the wait result so the retained record is the single
+            // source of truth for this readiness. Otherwise the same timer can be
+            // dispatched twice: once via the secondary scan when re-offered, and again
+            // from this still-live wait result on a later poll, breaking alternation.
+            wait_result_->clear_timer_with_index(current_timer_index);
             RetainedBlockedExecutable blocked;
             blocked.timer = timer;
             blocked.callback_group = callback_group;
@@ -968,6 +973,11 @@ Executor::get_next_ready_executable(AnyExecutable & any_executable)
           // it is serviced next, instead of letting the fresh-scan iteration order keep
           // favouring the same sibling (which otherwise skews the alternation).
           if (is_mutually_exclusive && callback_group == any_executable.callback_group) {
+            // Clear from the wait result for the same reason as above: the retained
+            // record owns this readiness, so the still-live wait result must not also
+            // dispatch this sibling on a subsequent poll (which gave it a bonus run and
+            // broke timer alternation).
+            wait_result_->clear_timer_with_index(current_timer_index);
             RetainedBlockedExecutable blocked;
             blocked.timer = timer;
             blocked.callback_group = callback_group;
