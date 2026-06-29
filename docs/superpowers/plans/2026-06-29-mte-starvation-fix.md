@@ -2,6 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **⚠️ DISTRO RETARGET (decided during execution, 2026-06-29):** The `wait_result_`-era
+> target is **Lyrical**, NOT Rolling. Rolling's source runs ahead of its published `rcl`
+> binaries (unbuildable), so we target the *released* distros: **Humble, Jazzy, Lyrical**.
+> Wherever this plan says `rolling` / `rolling-build` / `rolling-test` / `ros:rolling` /
+> `/opt/ros/rolling` / `fix/mte-starvation-rolling`, read **`lyrical`** / `lyrical-build` /
+> `lyrical-test` / `ros:lyrical` / `/opt/ros/lyrical` / `fix/mte-starvation-lyrical`.
+> Lyrical's executor source is byte-identical to Rolling's for the files this fix touches,
+> so the technical steps are unchanged. Jazzy is the backport/cherry-pick check (Task 5.3).
+
 **Goal:** Make the ROS 2 `MultiThreadedExecutor` starvation-free for mutually-exclusive callback groups, on both the Humble (`memory_strategy_`) era and the Jazzy→Rolling (`wait_result_`) era, validated in Docker against a deterministic test and benchmarked against the upstream `EventsCBGExecutor`.
 
 **Architecture:** The bug: at each poll, blocked callbacks (group `can_be_taken_from()==false`) are dropped from the wait set and only re-added later alongside fresh higher-priority instances, so the low-priority one starves. The fix (per the EMSOFT 2024 paper §VI): keep blocked entities *persistent* across polls and re-add them after `wait()`; guard callback-group-flag updates + guard-condition triggers under a second `notify_mutex_` so polling cannot race flag-clearing; only wait on newly-added entities to avoid busy-waiting. Two source eras need two distinct patches because the wait-set plumbing and the location of `can_be_taken_from().store(true)` differ.
