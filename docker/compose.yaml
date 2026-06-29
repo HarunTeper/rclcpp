@@ -1,0 +1,14 @@
+services:
+  lyrical:
+    build: { context: ., dockerfile: lyrical/Dockerfile }
+    image: mte-starvation/lyrical
+    volumes:
+      - ../:/ws/src/rclcpp_fork:ro
+      - lyrical-build:/ws/build
+      - lyrical-install:/ws/install
+    working_dir: /ws
+    # The rclcpp package sits at /ws/src/rclcpp_fork/rclcpp; symlink it in at runtime.
+    command: bash
+volumes:
+  lyrical-build:
+  lyrical-install:
