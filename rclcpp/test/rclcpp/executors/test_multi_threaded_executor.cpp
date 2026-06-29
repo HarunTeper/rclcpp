@@ -130,14 +130,14 @@ void run_starvation_scenario(const std::string & node_name)
   std::atomic_bool done{false};
 
   auto make_cb = [&](std::atomic_int & my_count) {
-    return [&my_count, &done, &executor]() {
-        std::this_thread::sleep_for(20ms);
-        const int mine = ++my_count;
-        if (mine >= kFireTarget && !done.exchange(true)) {
-          executor.cancel();
-        }
-      };
-  };
+      return [&my_count, &done, &executor]() {
+               std::this_thread::sleep_for(20ms);
+               const int mine = ++my_count;
+               if (mine >= kFireTarget && !done.exchange(true)) {
+                 executor.cancel();
+               }
+             };
+    };
 
   auto timer_one = node->create_wall_timer(5ms, make_cb(count_one), group);
   auto timer_two = node->create_wall_timer(5ms, make_cb(count_two), group);
