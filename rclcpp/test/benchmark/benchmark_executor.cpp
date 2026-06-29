@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -114,7 +115,8 @@ public:
 public:
       void call_wait_for_work(std::chrono::nanoseconds timeout)
       {
-        Executor::wait_for_work(timeout);
+        std::unique_lock<std::mutex> notify_lock(this->notify_mutex_);
+        Executor::wait_for_work(notify_lock, timeout);
       }
     };
 
@@ -158,7 +160,8 @@ public:
 public:
       void call_wait_for_work(std::chrono::nanoseconds timeout)
       {
-        Executer::wait_for_work(timeout);
+        std::unique_lock<std::mutex> notify_lock(this->notify_mutex_);
+        Executer::wait_for_work(notify_lock, timeout);
       }
     };
 
