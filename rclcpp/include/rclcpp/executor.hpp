@@ -682,6 +682,14 @@ protected:
    * self-triggers on them (no busy-wait); they are picked up only after a poll
    * returns, which the MultiThreadedExecutor wakes via the interrupt guard
    * condition when the group frees.
+   *
+   * Concurrency: like wait_result_ above, the effective guard for this member
+   * is the executor's poll serialization (get_next_ready_executable, the only
+   * reader/writer, runs single-file under the MultiThreadedExecutor's
+   * wait_mutex_, and the single-threaded executors are single-threaded by
+   * construction), not mutex_ directly -- get_next_ready_executable reads it
+   * without holding mutex_. The TSA annotation is kept for consistency with
+   * wait_result_/current_collection_, whose accesses follow the same pattern.
    */
   std::deque<RetainedBlockedExecutable> retained_blocked_ RCPPUTILS_TSA_GUARDED_BY(mutex_);
 
