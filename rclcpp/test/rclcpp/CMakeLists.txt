@@ -652,6 +652,7 @@ if(TARGET test_static_single_threaded_executor)
 endif()
 
 ament_add_gtest(test_multi_threaded_executor executors/test_multi_threaded_executor.cpp
+  TIMEOUT 60
   APPEND_LIBRARY_DIRS "${append_library_dirs}")
 if(TARGET test_multi_threaded_executor)
   ament_target_dependencies(test_multi_threaded_executor

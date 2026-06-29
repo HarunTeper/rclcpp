@@ -30,3 +30,11 @@ jazzy-build:
 
 jazzy-shell:
 	$(COMPOSE) run --rm jazzy bash
+
+humble-test:
+	$(COMPOSE) run --rm humble bash -lc '\
+	  mkdir -p /ws/src/pkg && ln -sfn /ws/src/rclcpp_fork/rclcpp /ws/src/pkg/rclcpp && \
+	  source /opt/ros/humble/setup.bash && \
+	  colcon build --packages-select rclcpp --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo && \
+	  colcon test --packages-select rclcpp --ctest-args -R test_multi_threaded_executor && \
+	  colcon test-result --verbose'
