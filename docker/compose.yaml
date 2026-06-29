@@ -9,6 +9,28 @@ services:
     working_dir: /ws
     # The rclcpp package sits at /ws/src/rclcpp_fork/rclcpp; symlink it in at runtime.
     command: bash
+  humble:
+    build: { context: ., dockerfile: humble/Dockerfile }
+    image: mte-starvation/humble
+    volumes:
+      - ../:/ws/src/rclcpp_fork:ro
+      - humble-build:/ws/build
+      - humble-install:/ws/install
+    working_dir: /ws
+    command: bash
+  jazzy:
+    build: { context: ., dockerfile: jazzy/Dockerfile }
+    image: mte-starvation/jazzy
+    volumes:
+      - ../:/ws/src/rclcpp_fork:ro
+      - jazzy-build:/ws/build
+      - jazzy-install:/ws/install
+    working_dir: /ws
+    command: bash
 volumes:
   lyrical-build:
   lyrical-install:
+  humble-build:
+  humble-install:
+  jazzy-build:
+  jazzy-install:
