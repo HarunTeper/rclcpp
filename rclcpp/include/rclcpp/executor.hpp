@@ -433,6 +433,25 @@ protected:
   void
   execute_any_executable(AnyExecutable & any_exec);
 
+  /// Execute a callback without resetting the callback group flag or triggering the guard condition.
+  /**
+   * Used by the MultiThreadedExecutor so that flag reset and guard-condition trigger can be
+   * serialized under update_mutex_ after the callback completes, preventing races with concurrent
+   * polling threads.
+   */
+  RCLCPP_PUBLIC
+  void
+  execute_any_executable_simple(AnyExecutable & any_exec);
+
+  /// Trigger the interrupt guard condition to wake up a blocked rcl_wait call.
+  /**
+   * Called under update_mutex_ after resetting a callback group's can_be_taken_from flag so that
+   * the wait set is re-evaluated and the newly unblocked entity can be scheduled.
+   */
+  RCLCPP_PUBLIC
+  void
+  notify_wait_set();
+
   RCLCPP_PUBLIC
   static void
   execute_subscription(
@@ -546,6 +565,15 @@ protected:
 
   // Mutex to protect the subsequent memory_strategy_.
   mutable std::mutex mutex_;
+
+  /// Guards wait-set access: held by MTE threads while calling get_next_executable so that only
+  /// one thread at a time fills and polls the wait set.
+  mutable std::mutex wait_set_mutex_;
+
+  /// Guards callback-group flag updates and guard-condition triggers so that flag-clearing
+  /// (can_be_taken_from().store(true)) and the notify_wait_set() trigger are atomic with respect
+  /// to the polling loop that reads flags and unlocks before rcl_wait.
+  mutable std::mutex update_mutex_;
 
   /// The memory strategy: an interface for handling user-defined memory allocation strategies.
   memory_strategy::MemoryStrategy::SharedPtr

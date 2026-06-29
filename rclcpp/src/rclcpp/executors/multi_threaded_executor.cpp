@@ -78,7 +78,7 @@ MultiThreadedExecutor::run(size_t this_thread_number)
   while (rclcpp::ok(this->context_) && spinning.load()) {
     rclcpp::AnyExecutable any_exec;
     {
-      std::lock_guard wait_lock{wait_mutex_};
+      std::lock_guard wait_lock{wait_set_mutex_};
       if (!rclcpp::ok(this->context_) || !spinning.load()) {
         return;
       }
@@ -90,10 +90,16 @@ MultiThreadedExecutor::run(size_t this_thread_number)
       std::this_thread::yield();
     }
 
-    execute_any_executable(any_exec);
+    execute_any_executable_simple(any_exec);
 
-    // Clear the callback_group to prevent the AnyExecutable destructor from
-    // resetting the callback group `can_be_taken_from`
-    any_exec.callback_group.reset();
+    // Reset the callback group flag and trigger the guard condition under update_mutex_ so that
+    // polling cannot race between the flag write and the wait-set interrupt.
+    {
+      std::lock_guard wait_lock{update_mutex_};
+      any_exec.callback_group->can_be_taken_from().store(true);
+      any_exec.callback_group.reset();
+      notify_wait_set();
+    }
   }
 }
+

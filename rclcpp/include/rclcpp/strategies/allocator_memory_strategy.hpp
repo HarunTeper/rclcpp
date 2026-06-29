@@ -91,6 +91,116 @@ public:
     waitable_handles_.clear();
   }
 
+  void clear_handles_with_groups(const WeakCallbackGroupsToNodesMap & weak_groups_to_nodes)
+    override
+  {
+    number_of_blocked_subscriptions = 0;
+    auto subscription_it = subscription_handles_.begin();
+    while (subscription_it != subscription_handles_.end()) {
+      auto subscription = get_subscription_by_handle(*subscription_it, weak_groups_to_nodes);
+      if (subscription) {
+        auto group = get_group_by_subscription(subscription, weak_groups_to_nodes);
+        if (!group) {
+          subscription_it = subscription_handles_.erase(subscription_it);
+          continue;
+        }
+        if (!group->can_be_taken_from().load()) {
+          // Group is blocked; keep this handle at the front and count it
+          number_of_blocked_subscriptions++;
+          ++subscription_it;
+          continue;
+        }
+        subscription_it = subscription_handles_.erase(subscription_it);
+        continue;
+      }
+      subscription_it = subscription_handles_.erase(subscription_it);
+    }
+
+    number_of_blocked_timers = 0;
+    auto timer_it = timer_handles_.begin();
+    while (timer_it != timer_handles_.end()) {
+      auto timer = get_timer_by_handle(*timer_it, weak_groups_to_nodes);
+      if (timer) {
+        auto group = get_group_by_timer(timer, weak_groups_to_nodes);
+        if (!group) {
+          timer_it = timer_handles_.erase(timer_it);
+          continue;
+        }
+        if (!group->can_be_taken_from().load()) {
+          number_of_blocked_timers++;
+          ++timer_it;
+          continue;
+        }
+        timer_it = timer_handles_.erase(timer_it);
+        continue;
+      }
+      timer_it = timer_handles_.erase(timer_it);
+    }
+
+    number_of_blocked_services = 0;
+    auto service_it = service_handles_.begin();
+    while (service_it != service_handles_.end()) {
+      auto service = get_service_by_handle(*service_it, weak_groups_to_nodes);
+      if (service) {
+        auto group = get_group_by_service(service, weak_groups_to_nodes);
+        if (!group) {
+          service_it = service_handles_.erase(service_it);
+          continue;
+        }
+        if (!group->can_be_taken_from().load()) {
+          number_of_blocked_services++;
+          ++service_it;
+          continue;
+        }
+        service_it = service_handles_.erase(service_it);
+        continue;
+      }
+      service_it = service_handles_.erase(service_it);
+    }
+
+    number_of_blocked_clients = 0;
+    auto client_it = client_handles_.begin();
+    while (client_it != client_handles_.end()) {
+      auto client = get_client_by_handle(*client_it, weak_groups_to_nodes);
+      if (client) {
+        auto group = get_group_by_client(client, weak_groups_to_nodes);
+        if (!group) {
+          client_it = client_handles_.erase(client_it);
+          continue;
+        }
+        if (!group->can_be_taken_from().load()) {
+          number_of_blocked_clients++;
+          ++client_it;
+          continue;
+        }
+        client_it = client_handles_.erase(client_it);
+        continue;
+      }
+      client_it = client_handles_.erase(client_it);
+    }
+
+    number_of_blocked_waitables = 0;
+    auto waitable_it = waitable_handles_.begin();
+    while (waitable_it != waitable_handles_.end()) {
+      auto waitable = *waitable_it;
+      if (waitable) {
+        auto group = get_group_by_waitable(waitable, weak_groups_to_nodes);
+        if (!group) {
+          waitable_it = waitable_handles_.erase(waitable_it);
+          continue;
+        }
+        if (!group->can_be_taken_from().load()) {
+          number_of_blocked_waitables++;
+          ++waitable_it;
+          continue;
+        }
+        waitable_it = waitable_handles_.erase(waitable_it);
+        continue;
+      }
+      waitable_it = waitable_handles_.erase(waitable_it);
+    }
+  }
+
   void remove_null_handles(rcl_wait_set_t * wait_set) override
   {
     // TODO(jacobperron): Check if wait set sizes are what we expect them to be?
@@ -99,29 +209,29 @@ public:
     // Important to use subscription_handles_.size() instead of wait set's size since
     // there may be more subscriptions in the wait set due to Waitables added to the end.
     // The same logic applies for other entities.
-    for (size_t i = 0; i < subscription_handles_.size(); ++i) {
+    for (size_t i = 0; i < subscription_handles_.size() - number_of_blocked_subscriptions; ++i) {
       if (!wait_set->subscriptions[i]) {
-        subscription_handles_[i].reset();
+        subscription_handles_[i + number_of_blocked_subscriptions].reset();
       }
     }
-    for (size_t i = 0; i < service_handles_.size(); ++i) {
+    for (size_t i = 0; i < service_handles_.size() - number_of_blocked_services; ++i) {
       if (!wait_set->services[i]) {
-        service_handles_[i].reset();
+        service_handles_[i + number_of_blocked_services].reset();
       }
     }
-    for (size_t i = 0; i < client_handles_.size(); ++i) {
+    for (size_t i = 0; i < client_handles_.size() - number_of_blocked_clients; ++i) {
       if (!wait_set->clients[i]) {
-        client_handles_[i].reset();
+        client_handles_[i + number_of_blocked_clients].reset();
       }
     }
-    for (size_t i = 0; i < timer_handles_.size(); ++i) {
+    for (size_t i = 0; i < timer_handles_.size() - number_of_blocked_timers; ++i) {
       if (!wait_set->timers[i]) {
-        timer_handles_[i].reset();
+        timer_handles_[i + number_of_blocked_timers].reset();
       }
     }
-    for (size_t i = 0; i < waitable_handles_.size(); ++i) {
-      if (!waitable_handles_[i]->is_ready(wait_set)) {
-        waitable_handles_[i].reset();
+    for (size_t i = 0; i < waitable_handles_.size() - number_of_blocked_waitables; ++i) {
+      if (!waitable_handles_[i + number_of_blocked_waitables]->is_ready(wait_set)) {
+        waitable_handles_[i + number_of_blocked_waitables].reset();
       }
     }
 
@@ -196,8 +306,12 @@ public:
 
   bool add_handles_to_wait_set(rcl_wait_set_t * wait_set) override
   {
-    for (const std::shared_ptr<const rcl_subscription_t> & subscription : subscription_handles_) {
-      if (rcl_wait_set_add_subscription(wait_set, subscription.get(), NULL) != RCL_RET_OK) {
+    // Skip the first number_of_blocked_* entries — those are handles whose callback group is
+    // currently executing (can_be_taken_from()==false) and must not be added to the wait set.
+    for (size_t i = number_of_blocked_subscriptions; i < subscription_handles_.size(); ++i) {
+      if (rcl_wait_set_add_subscription(wait_set, subscription_handles_[i].get(), NULL) !=
+        RCL_RET_OK)
+      {
         RCUTILS_LOG_ERROR_NAMED(
           "rclcpp",
           "Couldn't add subscription to wait set: %s", rcl_get_error_string().str);
@@ -205,8 +319,8 @@ public:
       }
     }
 
-    for (const std::shared_ptr<const rcl_client_t> & client : client_handles_) {
-      if (rcl_wait_set_add_client(wait_set, client.get(), NULL) != RCL_RET_OK) {
+    for (size_t i = number_of_blocked_clients; i < client_handles_.size(); ++i) {
+      if (rcl_wait_set_add_client(wait_set, client_handles_[i].get(), NULL) != RCL_RET_OK) {
         RCUTILS_LOG_ERROR_NAMED(
           "rclcpp",
           "Couldn't add client to wait set: %s", rcl_get_error_string().str);
@@ -214,8 +328,8 @@ public:
       }
     }
 
-    for (const std::shared_ptr<const rcl_service_t> & service : service_handles_) {
-      if (rcl_wait_set_add_service(wait_set, service.get(), NULL) != RCL_RET_OK) {
+    for (size_t i = number_of_blocked_services; i < service_handles_.size(); ++i) {
+      if (rcl_wait_set_add_service(wait_set, service_handles_[i].get(), NULL) != RCL_RET_OK) {
         RCUTILS_LOG_ERROR_NAMED(
           "rclcpp",
           "Couldn't add service to wait set: %s", rcl_get_error_string().str);
@@ -223,8 +337,8 @@ public:
       }
     }
 
-    for (const std::shared_ptr<const rcl_timer_t> & timer : timer_handles_) {
-      if (rcl_wait_set_add_timer(wait_set, timer.get(), NULL) != RCL_RET_OK) {
+    for (size_t i = number_of_blocked_timers; i < timer_handles_.size(); ++i) {
+      if (rcl_wait_set_add_timer(wait_set, timer_handles_[i].get(), NULL) != RCL_RET_OK) {
         RCUTILS_LOG_ERROR_NAMED(
           "rclcpp",
           "Couldn't add timer to wait set: %s", rcl_get_error_string().str);
@@ -236,8 +350,8 @@ public:
       detail::add_guard_condition_to_rcl_wait_set(*wait_set, *guard_condition);
     }
 
-    for (const std::shared_ptr<Waitable> & waitable : waitable_handles_) {
-      waitable->add_to_wait_set(wait_set);
+    for (size_t i = number_of_blocked_waitables; i < waitable_handles_.size(); ++i) {
+      waitable_handles_[i]->add_to_wait_set(wait_set);
     }
     return true;
   }
@@ -433,7 +547,8 @@ public:
 
   size_t number_of_ready_subscriptions() const override
   {
-    size_t number_of_subscriptions = subscription_handles_.size();
+    size_t number_of_subscriptions =
+      subscription_handles_.size() - number_of_blocked_subscriptions;
     for (const std::shared_ptr<Waitable> & waitable : waitable_handles_) {
       number_of_subscriptions += waitable->get_number_of_ready_subscriptions();
     }
@@ -442,7 +557,7 @@ public:
 
   size_t number_of_ready_services() const override
   {
-    size_t number_of_services = service_handles_.size();
+    size_t number_of_services = service_handles_.size() - number_of_blocked_services;
     for (const std::shared_ptr<Waitable> & waitable : waitable_handles_) {
       number_of_services += waitable->get_number_of_ready_services();
     }
@@ -460,7 +575,7 @@ public:
 
   size_t number_of_ready_clients() const override
   {
-    size_t number_of_clients = client_handles_.size();
+    size_t number_of_clients = client_handles_.size() - number_of_blocked_clients;
     for (const std::shared_ptr<Waitable> & waitable : waitable_handles_) {
       number_of_clients += waitable->get_number_of_ready_clients();
     }
@@ -478,7 +593,7 @@ public:
 
   size_t number_of_ready_timers() const override
   {
-    size_t number_of_timers = timer_handles_.size();
+    size_t number_of_timers = timer_handles_.size() - number_of_blocked_timers;
     for (const std::shared_ptr<Waitable> & waitable : waitable_handles_) {
       number_of_timers += waitable->get_number_of_ready_timers();
     }
@@ -487,7 +602,7 @@ public:
 
   size_t number_of_waitables() const override
   {
-    return waitable_handles_.size();
+    return waitable_handles_.size() - number_of_blocked_waitables;
   }
 
 private:

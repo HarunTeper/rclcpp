@@ -450,6 +450,9 @@ Executor::spin_some_impl(std::chrono::nanoseconds max_duration, bool exhaustive)
   while (rclcpp::ok(context_) && spinning.load() && max_duration_not_elapsed()) {
     AnyExecutable any_exec;
     if (!work_available) {
+      // Acquire update_mutex_ before wait_for_work; it will be released inside wait_for_work
+      // before blocking in rcl_wait (same lock discipline as get_next_executable).
+      update_mutex_.lock();
       wait_for_work(std::chrono::milliseconds::zero());
     }
     if (get_next_ready_executable(any_exec)) {
@@ -542,6 +545,50 @@ Executor::execute_any_executable(AnyExecutable & any_exec)
     throw std::runtime_error(
             std::string(
               "Failed to trigger guard condition from execute_any_executable: ") + ex.what());
+  }
+}
+
+void
+Executor::execute_any_executable_simple(AnyExecutable & any_exec)
+{
+  if (!spinning.load()) {
+    return;
+  }
+  if (any_exec.timer) {
+    TRACEPOINT(
+      rclcpp_executor_execute,
+      static_cast<const void *>(any_exec.timer->get_timer_handle().get()));
+    execute_timer(any_exec.timer);
+  }
+  if (any_exec.subscription) {
+    TRACEPOINT(
+      rclcpp_executor_execute,
+      static_cast<const void *>(any_exec.subscription->get_subscription_handle().get()));
+    execute_subscription(any_exec.subscription);
+  }
+  if (any_exec.service) {
+    execute_service(any_exec.service);
+  }
+  if (any_exec.client) {
+    execute_client(any_exec.client);
+  }
+  if (any_exec.waitable) {
+    any_exec.waitable->execute(any_exec.data);
+  }
+  // NOTE: callback_group flag reset and guard condition trigger are intentionally omitted here.
+  // The MultiThreadedExecutor performs those steps under update_mutex_ after this function returns.
+}
+
+void Executor::notify_wait_set()
+{
+  if (spinning.load()) {
+    try {
+      interrupt_guard_condition_.trigger();
+    } catch (const rclcpp::exceptions::RCLError & ex) {
+      throw std::runtime_error(
+              std::string(
+                "Failed to trigger guard condition from notify_wait_set: ") + ex.what());
+    }
   }
 }
 
@@ -699,8 +746,10 @@ Executor::wait_for_work(std::chrono::nanoseconds timeout)
     // allowed to add to another executor
     add_callback_groups_from_nodes_associated_to_executor();
 
-    // Collect the subscriptions and timers to be waited on
-    memory_strategy_->clear_handles();
+    // Collect the subscriptions and timers to be waited on.
+    // Use the group-aware variant so blocked (currently executing) handles are retained at the
+    // front of each handle vector instead of being dropped and re-added next poll.
+    memory_strategy_->clear_handles_with_groups(weak_groups_to_nodes_);
     bool has_invalid_weak_groups_or_nodes =
       memory_strategy_->collect_entities(weak_groups_to_nodes_);
 
@@ -755,7 +804,11 @@ Executor::wait_for_work(std::chrono::nanoseconds timeout)
     if (!memory_strategy_->add_handles_to_wait_set(&wait_set_)) {
       throw std::runtime_error("Couldn't fill wait set");
     }
+    TRACEPOINT(rclcpp_executor_wait_for_work, 2);
   }
+  // Release update_mutex_ before blocking in rcl_wait so that callback-group flag resets
+  // (notify_wait_set()) can interrupt the wait without deadlocking.
+  update_mutex_.unlock();
 
   rcl_ret_t status =
     rcl_wait(&wait_set_, std::chrono::duration_cast<std::chrono::nanoseconds>(timeout).count());
@@ -907,19 +960,25 @@ Executor::get_next_ready_executable_from_map(
 bool
 Executor::get_next_executable(AnyExecutable & any_executable, std::chrono::nanoseconds timeout)
 {
+  // Lock update_mutex_ so that flag reads (can_be_taken_from) and the guard-condition trigger
+  // in notify_wait_set() are serialized.  wait_for_work() unlocks it before calling rcl_wait().
+  update_mutex_.lock();
   bool success = false;
   // Check to see if there are any subscriptions or timers needing service
   // TODO(wjwwood): improve run to run efficiency of this function
   success = get_next_ready_executable(any_executable);
   // If there are none
   if (!success) {
-    // Wait for subscriptions or timers to work on
+    // Wait for subscriptions or timers to work on (releases update_mutex_ before blocking)
     wait_for_work(timeout);
     if (!spinning.load()) {
       return false;
     }
     // Try again
     success = get_next_ready_executable(any_executable);
+  } else {
+    // Work was found without calling wait_for_work, so we must unlock manually here.
+    update_mutex_.unlock();
   }
   return success;
 }
