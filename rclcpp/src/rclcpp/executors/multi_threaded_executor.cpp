@@ -52,7 +52,10 @@ MultiThreadedExecutor::spin()
   std::vector<std::thread> threads;
   size_t thread_id = 0;
   {
-    std::lock_guard wait_lock{wait_mutex_};
+    // Gate the worker threads on wait_set_mutex_ (the same mutex run() takes before polling) so
+    // no worker starts polling the wait set until every thread has been emplaced. run() switched
+    // to wait_set_mutex_, so the spawn gate must use the same mutex to stay effective.
+    std::lock_guard wait_lock{wait_set_mutex_};
     for (; thread_id < number_of_threads_ - 1; ++thread_id) {
       auto func = std::bind(&MultiThreadedExecutor::run, this, thread_id);
       threads.emplace_back(func);
@@ -102,4 +105,3 @@ MultiThreadedExecutor::run(size_t this_thread_number)
     }
   }
 }
-

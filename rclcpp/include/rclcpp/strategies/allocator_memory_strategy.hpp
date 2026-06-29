@@ -15,6 +15,7 @@
 #ifndef RCLCPP__STRATEGIES__ALLOCATOR_MEMORY_STRATEGY_HPP_
 #define RCLCPP__STRATEGIES__ALLOCATOR_MEMORY_STRATEGY_HPP_
 
+#include <cassert>
 #include <memory>
 #include <vector>
 
@@ -89,10 +90,17 @@ public:
     client_handles_.clear();
     timer_handles_.clear();
     waitable_handles_.clear();
+    // Reset blocked counts too: leaving stale counts after a full clear would corrupt the
+    // number_of_ready_* / add_handles_to_wait_set offsets on the next poll.
+    number_of_blocked_subscriptions = 0;
+    number_of_blocked_services = 0;
+    number_of_blocked_clients = 0;
+    number_of_blocked_timers = 0;
+    number_of_blocked_waitables = 0;
   }
 
   void clear_handles_with_groups(const WeakCallbackGroupsToNodesMap & weak_groups_to_nodes)
-    override
+  override
   {
     number_of_blocked_subscriptions = 0;
     auto subscription_it = subscription_handles_.begin();
@@ -547,8 +555,11 @@ public:
 
   size_t number_of_ready_subscriptions() const override
   {
+    // Saturating subtract: number_of_blocked_* should never exceed the handle count, but clamp
+    // to guard against size_t underflow (which would request a huge wait-set resize / OOB access).
+    assert(number_of_blocked_subscriptions <= subscription_handles_.size());
     size_t number_of_subscriptions =
-      subscription_handles_.size() - number_of_blocked_subscriptions;
+      subtract_blocked(subscription_handles_.size(), number_of_blocked_subscriptions);
     for (const std::shared_ptr<Waitable> & waitable : waitable_handles_) {
       number_of_subscriptions += waitable->get_number_of_ready_subscriptions();
     }
@@ -557,7 +568,9 @@ public:
 
   size_t number_of_ready_services() const override
   {
-    size_t number_of_services = service_handles_.size() - number_of_blocked_services;
+    assert(number_of_blocked_services <= service_handles_.size());
+    size_t number_of_services =
+      subtract_blocked(service_handles_.size(), number_of_blocked_services);
     for (const std::shared_ptr<Waitable> & waitable : waitable_handles_) {
       number_of_services += waitable->get_number_of_ready_services();
     }
@@ -575,7 +588,9 @@ public:
 
   size_t number_of_ready_clients() const override
   {
-    size_t number_of_clients = client_handles_.size() - number_of_blocked_clients;
+    assert(number_of_blocked_clients <= client_handles_.size());
+    size_t number_of_clients =
+      subtract_blocked(client_handles_.size(), number_of_blocked_clients);
     for (const std::shared_ptr<Waitable> & waitable : waitable_handles_) {
       number_of_clients += waitable->get_number_of_ready_clients();
     }
@@ -593,7 +608,9 @@ public:
 
   size_t number_of_ready_timers() const override
   {
-    size_t number_of_timers = timer_handles_.size() - number_of_blocked_timers;
+    assert(number_of_blocked_timers <= timer_handles_.size());
+    size_t number_of_timers =
+      subtract_blocked(timer_handles_.size(), number_of_blocked_timers);
     for (const std::shared_ptr<Waitable> & waitable : waitable_handles_) {
       number_of_timers += waitable->get_number_of_ready_timers();
     }
@@ -602,10 +619,21 @@ public:
 
   size_t number_of_waitables() const override
   {
-    return waitable_handles_.size() - number_of_blocked_waitables;
+    assert(number_of_blocked_waitables <= waitable_handles_.size());
+    return subtract_blocked(waitable_handles_.size(), number_of_blocked_waitables);
   }
 
 private:
+  /// Saturating subtraction of the blocked-handle count from the total handle count.
+  /**
+   * Returns total - blocked, clamped to 0 if blocked somehow exceeds total, so a stale or
+   * corrupt blocked count can never underflow size_t and trigger a huge resize / OOB access.
+   */
+  static size_t subtract_blocked(size_t total, size_t blocked)
+  {
+    return (total >= blocked) ? (total - blocked) : 0u;
+  }
+
   template<typename T>
   using VectorRebind =
     std::vector<T, typename std::allocator_traits<Alloc>::template rebind_alloc<T>>;

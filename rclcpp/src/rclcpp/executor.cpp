@@ -450,10 +450,11 @@ Executor::spin_some_impl(std::chrono::nanoseconds max_duration, bool exhaustive)
   while (rclcpp::ok(context_) && spinning.load() && max_duration_not_elapsed()) {
     AnyExecutable any_exec;
     if (!work_available) {
-      // Acquire update_mutex_ before wait_for_work; it will be released inside wait_for_work
-      // before blocking in rcl_wait (same lock discipline as get_next_executable).
-      update_mutex_.lock();
-      wait_for_work(std::chrono::milliseconds::zero());
+      // Acquire update_mutex_ via a unique_lock before wait_for_work; it is released inside
+      // wait_for_work before blocking in rcl_wait (same lock discipline as get_next_executable),
+      // and the unique_lock destructor releases it if wait_for_work throws while it is held.
+      std::unique_lock<std::mutex> update_lock(update_mutex_);
+      wait_for_work(update_lock, std::chrono::milliseconds::zero());
     }
     if (get_next_ready_executable(any_exec)) {
       execute_any_executable(any_exec);
@@ -734,8 +735,13 @@ Executor::execute_client(
 }
 
 void
-Executor::wait_for_work(std::chrono::nanoseconds timeout)
+Executor::wait_for_work(
+  std::unique_lock<std::mutex> & update_lock,
+  std::chrono::nanoseconds timeout)
 {
+  // update_lock owns update_mutex_ on entry. It is released (update_lock.unlock()) just before
+  // rcl_wait on the normal path; if any step below throws while it is still held, the caller's
+  // unique_lock destructor releases it during unwinding, so update_mutex_ is never leaked.
   TRACEPOINT(rclcpp_executor_wait_for_work, timeout.count());
   {
     std::lock_guard<std::mutex> guard(mutex_);
@@ -808,7 +814,7 @@ Executor::wait_for_work(std::chrono::nanoseconds timeout)
   }
   // Release update_mutex_ before blocking in rcl_wait so that callback-group flag resets
   // (notify_wait_set()) can interrupt the wait without deadlocking.
-  update_mutex_.unlock();
+  update_lock.unlock();
 
   rcl_ret_t status =
     rcl_wait(&wait_set_, std::chrono::duration_cast<std::chrono::nanoseconds>(timeout).count());
@@ -960,26 +966,27 @@ Executor::get_next_ready_executable_from_map(
 bool
 Executor::get_next_executable(AnyExecutable & any_executable, std::chrono::nanoseconds timeout)
 {
-  // Lock update_mutex_ so that flag reads (can_be_taken_from) and the guard-condition trigger
-  // in notify_wait_set() are serialized.  wait_for_work() unlocks it before calling rcl_wait().
-  update_mutex_.lock();
+  // Lock update_mutex_ via a unique_lock so that flag reads (can_be_taken_from) and the
+  // guard-condition trigger in notify_wait_set() are serialized.  The lock is released exactly
+  // once on every path: wait_for_work() unlocks it before rcl_wait() on the normal wait path,
+  // and the unique_lock destructor releases it if get_next_ready_executable() or wait_for_work()
+  // throws while it is still held (no manual unlock that could leak on exceptions).
+  std::unique_lock<std::mutex> update_lock(update_mutex_);
   bool success = false;
   // Check to see if there are any subscriptions or timers needing service
   // TODO(wjwwood): improve run to run efficiency of this function
   success = get_next_ready_executable(any_executable);
   // If there are none
   if (!success) {
-    // Wait for subscriptions or timers to work on (releases update_mutex_ before blocking)
-    wait_for_work(timeout);
+    // Wait for subscriptions or timers to work on (releases update_lock before blocking)
+    wait_for_work(update_lock, timeout);
     if (!spinning.load()) {
       return false;
     }
     // Try again
     success = get_next_ready_executable(any_executable);
-  } else {
-    // Work was found without calling wait_for_work, so we must unlock manually here.
-    update_mutex_.unlock();
   }
+  // On the success path the unique_lock destructor releases update_mutex_ on return.
   return success;
 }
 

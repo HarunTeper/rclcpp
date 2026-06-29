@@ -433,7 +433,7 @@ protected:
   void
   execute_any_executable(AnyExecutable & any_exec);
 
-  /// Execute a callback without resetting the callback group flag or triggering the guard condition.
+  /// Execute a callback without resetting the callback-group flag or triggering the guard cond.
   /**
    * Used by the MultiThreadedExecutor so that flag reset and guard-condition trigger can be
    * serialized under update_mutex_ after the callback completes, preventing races with concurrent
@@ -470,11 +470,20 @@ protected:
   execute_client(rclcpp::ClientBase::SharedPtr client);
 
   /**
+   * The caller must pass a std::unique_lock that already owns update_mutex_. This function
+   * releases that lock (via update_lock.unlock()) right before blocking in rcl_wait so that
+   * post-execute threads can acquire update_mutex_ to reset callback-group flags. Passing the
+   * lock by reference (instead of locking/unlocking update_mutex_ manually) guarantees the lock
+   * is released exactly once on every path: on the normal path it is unlocked before rcl_wait,
+   * and if any setup step throws while the lock is still held, the caller's unique_lock
+   * destructor releases it during stack unwinding.
    * \throws std::runtime_error if the wait set can be cleared
    */
   RCLCPP_PUBLIC
   void
-  wait_for_work(std::chrono::nanoseconds timeout = std::chrono::nanoseconds(-1));
+  wait_for_work(
+    std::unique_lock<std::mutex> & update_lock,
+    std::chrono::nanoseconds timeout = std::chrono::nanoseconds(-1));
 
   RCLCPP_PUBLIC
   rclcpp::node_interfaces::NodeBaseInterface::SharedPtr
