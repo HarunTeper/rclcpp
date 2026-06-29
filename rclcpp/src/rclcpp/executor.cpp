@@ -277,7 +277,7 @@ Executor::spin_until_future_complete_impl(
   if (spinning.exchange(true)) {
     throw std::runtime_error("spin_until_future_complete() called while already spinning");
   }
-  RCPPUTILS_SCOPE_EXIT(wait_result_.reset();this->spinning.store(false););
+  RCPPUTILS_SCOPE_EXIT(wait_result_.reset();retained_blocked_.clear();this->spinning.store(false););
   while (rclcpp::ok(this->context_) && spinning.load()) {
     // Do one item of work.
     spin_once_impl(timeout_left);
@@ -366,13 +366,20 @@ Executor::spin_some_impl(std::chrono::nanoseconds max_duration, bool exhaustive)
   if (spinning.exchange(true)) {
     throw std::runtime_error("spin_some() called while already spinning");
   }
-  RCPPUTILS_SCOPE_EXIT(wait_result_.reset();this->spinning.store(false););
+  RCPPUTILS_SCOPE_EXIT(wait_result_.reset();retained_blocked_.clear();this->spinning.store(false););
 
   // clear the wait result and wait for work without blocking to collect the work
   // for the first time
   // both spin_some and spin_all wait for work at the beginning
   wait_result_.reset();
-  wait_for_work(std::chrono::milliseconds(0));
+  {
+    // Acquire notify_mutex_ via a unique_lock before wait_for_work; it is released inside
+    // wait_for_work before blocking in wait_set_.wait() (same lock discipline as
+    // get_next_executable), and the unique_lock destructor releases it if wait_for_work
+    // throws while it is still held.
+    std::unique_lock<std::mutex> notify_lock(notify_mutex_);
+    wait_for_work(notify_lock, std::chrono::milliseconds(0));
+  }
   bool entity_states_fully_polled = true;
 
   if (entities_need_rebuild_) {
@@ -418,7 +425,10 @@ Executor::spin_some_impl(std::chrono::nanoseconds max_duration, bool exhaustive)
       if (exhaustive) {
         // if exhaustive, wait for work again
         // this only happens for spin_all; spin_some only waits at the start
-        wait_for_work(std::chrono::milliseconds(0));
+        {
+          std::unique_lock<std::mutex> notify_lock(notify_mutex_);
+          wait_for_work(notify_lock, std::chrono::milliseconds(0));
+        }
         entity_states_fully_polled = true;
         if (entities_need_rebuild_) {
           // if the last wait triggered a collection rebuild, we need to call
@@ -448,7 +458,7 @@ Executor::spin_once(std::chrono::nanoseconds timeout)
   if (spinning.exchange(true)) {
     throw std::runtime_error("spin_once() called while already spinning");
   }
-  RCPPUTILS_SCOPE_EXIT(wait_result_.reset();this->spinning.store(false););
+  RCPPUTILS_SCOPE_EXIT(wait_result_.reset();retained_blocked_.clear();this->spinning.store(false););
   spin_once_impl(timeout);
 }
 
@@ -500,6 +510,45 @@ Executor::execute_any_executable(AnyExecutable & any_exec)
 
   // Reset the callback_group, regardless of type
   any_exec.callback_group->can_be_taken_from().store(true);
+}
+
+void
+Executor::execute_any_executable_simple(AnyExecutable & any_exec)
+{
+  if (!spinning.load()) {
+    return;
+  }
+
+  assert(
+    (void("cannot execute an AnyExecutable without a valid callback group"),
+    any_exec.callback_group));
+
+  if (any_exec.timer) {
+    TRACETOOLS_TRACEPOINT(
+      rclcpp_executor_execute,
+      static_cast<const void *>(any_exec.timer->get_timer_handle().get()));
+    execute_timer(any_exec.timer, any_exec.data);
+  }
+  if (any_exec.subscription) {
+    TRACETOOLS_TRACEPOINT(
+      rclcpp_executor_execute,
+      static_cast<const void *>(any_exec.subscription->get_subscription_handle().get()));
+    execute_subscription(any_exec.subscription);
+  }
+  if (any_exec.service) {
+    execute_service(any_exec.service);
+  }
+  if (any_exec.client) {
+    execute_client(any_exec.client);
+  }
+  if (any_exec.waitable) {
+    const std::shared_ptr<void> & const_data = any_exec.data;
+    any_exec.waitable->execute(const_data);
+  }
+
+  // NOTE: unlike execute_any_executable(), this intentionally does NOT reset
+  // can_be_taken_from(). The MultiThreadedExecutor resets it (and triggers the
+  // interrupt guard condition) under notify_mutex_ after this returns.
 }
 
 template<typename Taker, typename Handler>
@@ -739,11 +788,20 @@ Executor::collect_entities()
 }
 
 void
-Executor::wait_for_work(std::chrono::nanoseconds timeout)
+Executor::wait_for_work(
+  std::unique_lock<std::mutex> & notify_lock,
+  std::chrono::nanoseconds timeout)
 {
+  // notify_lock owns notify_mutex_ on entry. It is released (notify_lock.unlock())
+  // just before blocking in wait_set_.wait() on the normal path; if any step below
+  // throws while it is still held, the caller's unique_lock destructor releases it
+  // during unwinding, so notify_mutex_ is never leaked.
   TRACETOOLS_TRACEPOINT(rclcpp_executor_wait_for_work, timeout.count());
 
-  // Clear any previous wait result
+  // Clear any previous wait result. A WaitResult cannot be retained across the next
+  // wait() (wait_result_acquire() throws if already holding, and the underlying rcl
+  // wait set arrays are overwritten by wait()), so the retain-and-reconsult of blocked
+  // mutually-exclusive entities is done via retained_blocked_, not by keeping this.
   this->wait_result_.reset();
 
   // we need to make sure that callback groups don't get out of scope
@@ -767,6 +825,11 @@ Executor::wait_for_work(std::chrono::nanoseconds timeout)
       }
     }
   }
+
+  // Release notify_mutex_ before blocking in wait_set_.wait() so that a thread that
+  // just finished a mutually-exclusive callback can reset can_be_taken_from() and
+  // trigger the interrupt guard condition (waking this wait) without deadlocking.
+  notify_lock.unlock();
 
   this->wait_result_.emplace(wait_set_.wait(timeout));
 
@@ -794,6 +857,83 @@ Executor::get_next_ready_executable(AnyExecutable & any_executable)
 
   bool valid_executable = false;
 
+  // Helper: the per-entity key used to dedupe retained records.
+  auto retained_key = [](const RetainedBlockedExecutable & r) -> const void * {
+      if (r.timer) {return r.timer->get_timer_handle().get();}
+      if (r.subscription) {return r.subscription->get_subscription_handle().get();}
+      if (r.service) {return r.service->get_service_handle().get();}
+      if (r.client) {return r.client->get_client_handle().get();}
+      if (r.waitable) {return r.waitable.get();}
+      return nullptr;
+    };
+
+  // Helper: record a mutually-exclusive entity that is ready now but whose group is
+  // busy, so it can be re-offered once the group frees (retain-and-reconsult). The
+  // entity is deduped so the deque cannot grow unbounded while a group stays busy
+  // across many polls.
+  auto retain_blocked = [this, &retained_key](RetainedBlockedExecutable && blocked) {
+      const void * key = retained_key(blocked);
+      for (const auto & retained : retained_blocked_) {
+        if (retained_key(retained) == key) {
+          return;
+        }
+      }
+      retained_blocked_.push_back(std::move(blocked));
+    };
+
+  // First, re-offer any previously blocked mutually-exclusive entity whose group has
+  // since freed. This is consulted before the fresh wait_result_ so that an entity
+  // skipped on an earlier poll is not starved by a sibling that keeps re-readying.
+  // Entities whose group is still busy are left in place; entities whose group is gone
+  // are dropped.
+  for (auto it = retained_blocked_.begin(); it != retained_blocked_.end(); ) {
+    auto callback_group = it->callback_group.lock();
+    if (!callback_group) {
+      it = retained_blocked_.erase(it);
+      continue;
+    }
+    if (!callback_group->can_be_taken_from()) {
+      ++it;
+      continue;
+    }
+    if (it->timer) {
+      // The timer was not called when it was skipped; call it now. If it is no longer
+      // ready (e.g. canceled), drop it instead of re-offering.
+      auto data = it->timer->call();
+      if (!data) {
+        it = retained_blocked_.erase(it);
+        continue;
+      }
+      any_executable.timer = it->timer;
+      any_executable.data = data;
+    } else if (it->subscription) {
+      any_executable.subscription = it->subscription;
+    } else if (it->service) {
+      any_executable.service = it->service;
+    } else if (it->client) {
+      any_executable.client = it->client;
+    } else if (it->waitable) {
+      any_executable.waitable = it->waitable;
+      any_executable.data = it->waitable->take_data();
+    } else {
+      // Empty record (should not happen); drop it.
+      it = retained_blocked_.erase(it);
+      continue;
+    }
+    any_executable.callback_group = callback_group;
+    retained_blocked_.erase(it);
+    valid_executable = true;
+    break;
+  }
+
+  if (valid_executable) {
+    // A retained entity was selected; mark its mutually-exclusive group busy and return.
+    if (any_executable.callback_group->type() == CallbackGroupType::MutuallyExclusive) {
+      any_executable.callback_group->can_be_taken_from().store(false);
+    }
+    return true;
+  }
+
   if (!wait_result_.has_value() || wait_result_->kind() != rclcpp::WaitResultKind::Ready) {
     return false;
   }
@@ -809,7 +949,41 @@ Executor::get_next_ready_executable(AnyExecutable & any_executable)
       auto entity_iter = current_collection_.timers.find(timer->get_timer_handle().get());
       if (entity_iter != current_collection_.timers.end()) {
         auto callback_group = entity_iter->second.callback_group.lock();
+        const bool is_mutually_exclusive = callback_group &&
+          callback_group->type() == CallbackGroupType::MutuallyExclusive;
         if (!callback_group || !callback_group->can_be_taken_from()) {
+          // Retain a ready-but-blocked mutually-exclusive timer so it is re-offered
+          // once the group frees, instead of being lost when the wait result is reset.
+          if (is_mutually_exclusive) {
+            // Clear the timer from the wait result so the retained record is the single
+            // source of truth for this readiness. Otherwise the same timer can be
+            // dispatched twice: once via the secondary scan when re-offered, and again
+            // from this still-live wait result on a later poll, breaking alternation.
+            wait_result_->clear_timer_with_index(current_timer_index);
+            RetainedBlockedExecutable blocked;
+            blocked.timer = timer;
+            blocked.callback_group = callback_group;
+            retain_blocked(std::move(blocked));
+          }
+          current_timer_index++;
+          continue;
+        }
+        if (valid_executable) {
+          // A timer was already selected this round; its mutually-exclusive group is
+          // about to be marked busy. Retain any other ready timer in that SAME group so
+          // it is serviced next, instead of letting the fresh-scan iteration order keep
+          // favouring the same sibling (which otherwise skews the alternation).
+          if (is_mutually_exclusive && callback_group == any_executable.callback_group) {
+            // Clear from the wait result for the same reason as above: the retained
+            // record owns this readiness, so the still-live wait result must not also
+            // dispatch this sibling on a subsequent poll (which gave it a bonus run and
+            // broke timer alternation).
+            wait_result_->clear_timer_with_index(current_timer_index);
+            RetainedBlockedExecutable blocked;
+            blocked.timer = timer;
+            blocked.callback_group = callback_group;
+            retain_blocked(std::move(blocked));
+          }
           current_timer_index++;
           continue;
         }
@@ -827,7 +1001,7 @@ Executor::get_next_ready_executable(AnyExecutable & any_executable)
         any_executable.timer = timer;
         any_executable.callback_group = callback_group;
         valid_executable = true;
-        break;
+        // Keep scanning so same-group ready siblings can be retained above.
       }
       current_timer_index++;
     }
@@ -840,6 +1014,14 @@ Executor::get_next_ready_executable(AnyExecutable & any_executable)
       if (entity_iter != current_collection_.subscriptions.end()) {
         auto callback_group = entity_iter->second.callback_group.lock();
         if (!callback_group || !callback_group->can_be_taken_from()) {
+          if (callback_group &&
+            callback_group->type() == CallbackGroupType::MutuallyExclusive)
+          {
+            RetainedBlockedExecutable blocked;
+            blocked.subscription = subscription;
+            blocked.callback_group = callback_group;
+            retain_blocked(std::move(blocked));
+          }
           continue;
         }
         any_executable.subscription = subscription;
@@ -856,6 +1038,14 @@ Executor::get_next_ready_executable(AnyExecutable & any_executable)
       if (entity_iter != current_collection_.services.end()) {
         auto callback_group = entity_iter->second.callback_group.lock();
         if (!callback_group || !callback_group->can_be_taken_from()) {
+          if (callback_group &&
+            callback_group->type() == CallbackGroupType::MutuallyExclusive)
+          {
+            RetainedBlockedExecutable blocked;
+            blocked.service = service;
+            blocked.callback_group = callback_group;
+            retain_blocked(std::move(blocked));
+          }
           continue;
         }
         any_executable.service = service;
@@ -872,6 +1062,14 @@ Executor::get_next_ready_executable(AnyExecutable & any_executable)
       if (entity_iter != current_collection_.clients.end()) {
         auto callback_group = entity_iter->second.callback_group.lock();
         if (!callback_group || !callback_group->can_be_taken_from()) {
+          if (callback_group &&
+            callback_group->type() == CallbackGroupType::MutuallyExclusive)
+          {
+            RetainedBlockedExecutable blocked;
+            blocked.client = client;
+            blocked.callback_group = callback_group;
+            retain_blocked(std::move(blocked));
+          }
           continue;
         }
         any_executable.client = client;
@@ -888,6 +1086,16 @@ Executor::get_next_ready_executable(AnyExecutable & any_executable)
       if (entity_iter != current_collection_.waitables.end()) {
         auto callback_group = entity_iter->second.callback_group.lock();
         if (!callback_group || !callback_group->can_be_taken_from()) {
+          if (callback_group &&
+            callback_group->type() == CallbackGroupType::MutuallyExclusive)
+          {
+            // Do not take the data yet; it is taken at re-offer time, matching the
+            // non-retained path which only takes data when the waitable is selected.
+            RetainedBlockedExecutable blocked;
+            blocked.waitable = waitable;
+            blocked.callback_group = callback_group;
+            retain_blocked(std::move(blocked));
+          }
           continue;
         }
         any_executable.waitable = waitable;
@@ -913,20 +1121,28 @@ Executor::get_next_ready_executable(AnyExecutable & any_executable)
 bool
 Executor::get_next_executable(AnyExecutable & any_executable, std::chrono::nanoseconds timeout)
 {
+  // Lock notify_mutex_ via a unique_lock so that flag reads (can_be_taken_from) and the
+  // guard-condition trigger done by a finishing thread are serialized. The lock is released
+  // exactly once on every path: wait_for_work() unlocks it before wait_set_.wait() on the
+  // normal wait path, and the unique_lock destructor releases it if get_next_ready_executable()
+  // or wait_for_work() throws while it is still held (no manual unlock that could leak on
+  // exceptions, and no double-unlock since after wait_for_work unlocks it owns_lock() is false).
+  std::unique_lock<std::mutex> notify_lock(notify_mutex_);
   bool success = false;
   // Check to see if there are any subscriptions or timers needing service
   // TODO(wjwwood): improve run to run efficiency of this function
   success = get_next_ready_executable(any_executable);
   // If there are none
   if (!success) {
-    // Wait for subscriptions or timers to work on
-    wait_for_work(timeout);
+    // Wait for subscriptions or timers to work on (releases notify_lock before blocking)
+    wait_for_work(notify_lock, timeout);
     if (!spinning.load()) {
       return false;
     }
     // Try again
     success = get_next_ready_executable(any_executable);
   }
+  // On the success path the unique_lock destructor releases notify_mutex_ on return.
   return success;
 }
 

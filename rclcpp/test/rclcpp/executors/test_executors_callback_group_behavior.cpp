@@ -24,6 +24,7 @@
 
 #include <chrono>
 #include <future>
+#include <mutex>
 
 #include <rclcpp/callback_group.hpp>
 #include <rclcpp/executor.hpp>
@@ -49,7 +50,8 @@ public:
 
   void wait()
   {
-    this->wait_for_work(g_timer_period * 10);
+    std::unique_lock<std::mutex> notify_lock(this->notify_mutex_);
+    this->wait_for_work(notify_lock, g_timer_period * 10);
   }
 
   size_t collected_timers() const

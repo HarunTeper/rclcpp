@@ -19,6 +19,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstdlib>
+#include <deque>
 #include <iostream>
 #include <list>
 #include <map>
@@ -455,6 +456,20 @@ protected:
   void
   execute_any_executable(AnyExecutable & any_exec);
 
+  /// Execute a callback without resetting the callback-group flag.
+  /**
+   * Identical to execute_any_executable() except that it does NOT reset the
+   * callback group's can_be_taken_from() flag at the end.
+   *
+   * Used by the MultiThreadedExecutor so that the flag reset and the
+   * interrupt-guard-condition trigger can be serialized together under
+   * notify_mutex_ after the callback completes, preventing a race with the
+   * polling thread that reads the flag in get_next_ready_executable().
+   */
+  RCLCPP_PUBLIC
+  void
+  execute_any_executable_simple(AnyExecutable & any_exec);
+
   /// Run subscription executable.
   /**
    * Do necessary setup and tear-down as well as executing the subscription.
@@ -501,12 +516,28 @@ protected:
   /**
    * Builds a set of waitable entities, which are passed to the middleware.
    * After building wait set, waits on middleware to notify.
+   *
+   * The caller must pass a std::unique_lock that already owns notify_mutex_.
+   * This function releases that lock (via notify_lock.unlock()) right before
+   * blocking in wait_set_.wait(), so that a thread which just finished a
+   * callback can acquire notify_mutex_ to reset a callback group's
+   * can_be_taken_from() flag and trigger the interrupt guard condition while
+   * this thread is waiting. Passing the lock by reference (instead of
+   * locking/unlocking notify_mutex_ manually) guarantees the lock is released
+   * exactly once on every path: on the normal path it is unlocked before
+   * wait_set_.wait(), and if any setup step throws while the lock is still
+   * held, the caller's unique_lock destructor releases it during unwinding.
+   *
+   * \param[in] notify_lock unique_lock owning notify_mutex_ on entry; released
+   *   before blocking in wait_set_.wait().
    * \param[in] timeout duration to wait for new work to become available.
    * \throws std::runtime_error if the wait set can be cleared
    */
   RCLCPP_PUBLIC
   void
-  wait_for_work(std::chrono::nanoseconds timeout = std::chrono::nanoseconds(-1));
+  wait_for_work(
+    std::unique_lock<std::mutex> & notify_lock,
+    std::chrono::nanoseconds timeout = std::chrono::nanoseconds(-1));
 
   /// Check for executable in ready state and populate union structure.
   /**
@@ -555,6 +586,18 @@ protected:
 
   mutable std::mutex mutex_;
 
+  /// Serializes callback-group flag updates and guard-condition triggers.
+  /**
+   * Held by a polling thread (via the unique_lock passed into wait_for_work)
+   * until just before it blocks in wait_set_.wait(), and by a thread that has
+   * just finished a mutually-exclusive callback while it resets
+   * can_be_taken_from() and triggers the interrupt guard condition. This makes
+   * the flag write and the wait-set interrupt atomic with respect to the
+   * polling loop that reads the flag, so a freshly unblocked entity cannot be
+   * lost between the flag reset and the wake-up.
+   */
+  mutable std::mutex notify_mutex_;
+
   /// The context associated with this executor.
   std::shared_ptr<rclcpp::Context> context_;
 
@@ -581,6 +624,54 @@ protected:
   /// WaitSet to be waited on.
   rclcpp::WaitSet wait_set_ RCPPUTILS_TSA_GUARDED_BY(mutex_);
   std::optional<rclcpp::WaitResult<rclcpp::WaitSet>> wait_result_ RCPPUTILS_TSA_GUARDED_BY(mutex_);
+
+  /// A mutually-exclusive entity skipped because its callback group was busy.
+  /**
+   * Holds the entity shared pointers plus a weak reference to its callback
+   * group. Deliberately NOT an AnyExecutable: AnyExecutable's destructor resets
+   * the group's can_be_taken_from() flag, which would prematurely free a group
+   * that is still busy running a callback. This plain record has trivial
+   * destruction and never touches the flag.
+   */
+  struct RetainedBlockedExecutable
+  {
+    rclcpp::SubscriptionBase::SharedPtr subscription;
+    rclcpp::TimerBase::SharedPtr timer;
+    rclcpp::ServiceBase::SharedPtr service;
+    rclcpp::ClientBase::SharedPtr client;
+    rclcpp::Waitable::SharedPtr waitable;
+    rclcpp::CallbackGroup::WeakPtr callback_group;
+  };
+
+  /// Mutually-exclusive entities skipped because their group was busy.
+  /**
+   * In the wait_result_ era there is a single wait_set_ whose ready arrays are
+   * overwritten by every wait_set_.wait() call, and a WaitResult cannot be kept
+   * "held" across the next wait() (wait_result_acquire() throws if already
+   * holding). So a previous WaitResult cannot be re-scanned after a new wait.
+   *
+   * Instead, when get_next_ready_executable() finds a mutually-exclusive entity
+   * that is ready but whose callback group is currently busy
+   * (can_be_taken_from() == false), it retains that entity here. On a later
+   * poll, once the group frees, the retained entity is re-offered (consulted
+   * before the fresh wait_result_) instead of being lost. This is the
+   * "retain-and-reconsult" behaviour from the design, realised with a side
+   * store because the WaitResult itself cannot be retained.
+   *
+   * Retained entities are NOT in wait_set_, so wait_set_.wait() never
+   * self-triggers on them (no busy-wait); they are picked up only after a poll
+   * returns, which the MultiThreadedExecutor wakes via the interrupt guard
+   * condition when the group frees.
+   *
+   * Concurrency: like wait_result_ above, the effective guard for this member
+   * is the executor's poll serialization (get_next_ready_executable, the only
+   * reader/writer, runs single-file under the MultiThreadedExecutor's
+   * wait_mutex_, and the single-threaded executors are single-threaded by
+   * construction), not mutex_ directly -- get_next_ready_executable reads it
+   * without holding mutex_. The TSA annotation is kept for consistency with
+   * wait_result_/current_collection_, whose accesses follow the same pattern.
+   */
+  std::deque<RetainedBlockedExecutable> retained_blocked_ RCPPUTILS_TSA_GUARDED_BY(mutex_);
 
   /// Hold the current state of the collection being waited on by the waitset
   rclcpp::executors::ExecutorEntitiesCollection current_collection_ RCPPUTILS_TSA_GUARDED_BY(

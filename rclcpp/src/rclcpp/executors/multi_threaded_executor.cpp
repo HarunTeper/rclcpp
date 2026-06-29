@@ -17,6 +17,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 #include "rcpputils/scope_exit.hpp"
@@ -55,7 +56,7 @@ MultiThreadedExecutor::spin()
   if (spinning.exchange(true)) {
     throw std::runtime_error("spin() called while already spinning");
   }
-  RCPPUTILS_SCOPE_EXIT(wait_result_.reset();this->spinning.store(false););
+  RCPPUTILS_SCOPE_EXIT(wait_result_.reset();retained_blocked_.clear();this->spinning.store(false););
   std::vector<std::thread> threads;
   size_t thread_id = 0;
   {
@@ -97,22 +98,31 @@ MultiThreadedExecutor::run(size_t this_thread_number)
       std::this_thread::yield();
     }
 
-    execute_any_executable(any_exec);
+    // Execute without resetting the callback-group flag; the reset and the
+    // interrupt-guard-condition trigger are done together under notify_mutex_
+    // below so that a polling thread cannot observe the freed flag without also
+    // being woken (or observe the wake without the freed flag).
+    execute_any_executable_simple(any_exec);
 
-    if (any_exec.callback_group &&
-      any_exec.callback_group->type() == CallbackGroupType::MutuallyExclusive)
-    {
-      try {
-        interrupt_guard_condition_->trigger();
-      } catch (const rclcpp::exceptions::RCLError & ex) {
-        throw std::runtime_error(
-                std::string(
-                  "Failed to trigger guard condition on callback group change: ") + ex.what());
+    if (any_exec.callback_group) {
+      // Serialize the flag reset and the guard-condition trigger against the
+      // polling loop (which holds notify_mutex_ until just before it blocks in
+      // wait_set_.wait()). This makes the newly unblocked entity visible to the
+      // next poll and guarantees that poll is woken.
+      std::lock_guard<std::mutex> notify_lock{notify_mutex_};
+      any_exec.callback_group->can_be_taken_from().store(true);
+      if (any_exec.callback_group->type() == CallbackGroupType::MutuallyExclusive) {
+        try {
+          interrupt_guard_condition_->trigger();
+        } catch (const rclcpp::exceptions::RCLError & ex) {
+          throw std::runtime_error(
+                  std::string(
+                    "Failed to trigger guard condition on callback group change: ") + ex.what());
+        }
       }
+      // Clear the callback_group to prevent the AnyExecutable destructor from
+      // resetting the callback group `can_be_taken_from` again.
+      any_exec.callback_group.reset();
     }
-
-    // Clear the callback_group to prevent the AnyExecutable destructor from
-    // resetting the callback group `can_be_taken_from`
-    any_exec.callback_group.reset();
   }
 }
