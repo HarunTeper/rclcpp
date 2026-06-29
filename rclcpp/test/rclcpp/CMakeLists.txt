@@ -530,7 +530,7 @@ if(TARGET test_executors_warmup)
 endif()
 
 ament_add_ros_isolated_gtest(test_multi_threaded_executor executors/test_multi_threaded_executor.cpp
-  APPEND_LIBRARY_DIRS "${append_library_dirs}")
+  APPEND_LIBRARY_DIRS "${append_library_dirs}" TIMEOUT 60)
 if(TARGET test_multi_threaded_executor)
   target_link_libraries(test_multi_threaded_executor ${PROJECT_NAME})
 endif()

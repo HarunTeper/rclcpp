@@ -14,14 +14,19 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <string>
 #include <memory>
+#include <thread>
 
 #include "rclcpp/exceptions.hpp"
 #include "rclcpp/node.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/executors.hpp"
+#if __has_include("rclcpp/executors/events_cbg_executor/events_cbg_executor.hpp")
+#include "rclcpp/executors/events_cbg_executor/events_cbg_executor.hpp"
+#endif
 
 using namespace std::chrono_literals;
 
@@ -102,3 +107,56 @@ TEST_F(TestMultiThreadedExecutor, timer_over_take) {
   executor.add_node(node);
   executor.spin();
 }
+
+/*
+  Starvation reproduction (paper Example 4): two timers in ONE mutually-exclusive
+  callback group, two executor threads. A correct executor alternates between the
+  two timers. The buggy MTE keeps re-selecting the higher-priority timer and never
+  runs the other one. Each callback blocks briefly so that while one runs, the
+  other's instance is blocked. We declare starvation if, by the time the first
+  timer has fired kFireTarget times, the second has fired zero times.
+  Templated on the executor type so multiple executors share one scenario body.
+*/
+template<typename ExecutorT>
+void run_starvation_scenario(const std::string & node_name)
+{
+  ExecutorT executor(rclcpp::ExecutorOptions(), 2u);
+  auto node = std::make_shared<rclcpp::Node>(node_name);
+  auto group = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+  constexpr int kFireTarget = 20;
+  std::atomic_int count_one{0};
+  std::atomic_int count_two{0};
+  std::atomic_bool done{false};
+
+  auto make_cb = [&](std::atomic_int & my_count) {
+    return [&my_count, &done, &executor]() {
+        std::this_thread::sleep_for(20ms);
+        const int mine = ++my_count;
+        if (mine >= kFireTarget && !done.exchange(true)) {
+          executor.cancel();
+        }
+      };
+  };
+
+  auto timer_one = node->create_wall_timer(5ms, make_cb(count_one), group);
+  auto timer_two = node->create_wall_timer(5ms, make_cb(count_two), group);
+
+  executor.add_node(node);
+  executor.spin();
+
+  EXPECT_GT(count_one.load(), 0) << "timer_one never executed (starved)";
+  EXPECT_GT(count_two.load(), 0) << "timer_two never executed (starved)";
+  EXPECT_LE(std::abs(count_one.load() - count_two.load()), 2)
+    << "counts diverged: one=" << count_one.load() << " two=" << count_two.load();
+}
+
+TEST_F(TestMultiThreadedExecutor, starvation_mutually_exclusive_timers) {
+  run_starvation_scenario<rclcpp::executors::MultiThreadedExecutor>("test_mte_starvation");
+}
+
+#if __has_include("rclcpp/executors/events_cbg_executor/events_cbg_executor.hpp")
+TEST_F(TestMultiThreadedExecutor, starvation_eventscbg_passes) {
+  run_starvation_scenario<rclcpp::executors::EventsCBGExecutor>("test_eventscbg_starvation");
+}
+#endif
