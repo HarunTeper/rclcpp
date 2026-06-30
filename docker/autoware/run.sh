@@ -77,8 +77,15 @@ colcon build --packages-select rclcpp \
   --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
   > /ws/build_rclcpp.log 2>&1 || { echo "rclcpp build FAILED:"; tail -40 /ws/build_rclcpp.log; exit 1; }
 safe_source /ws/install/setup.bash
+# BUILD_TESTING=OFF: the reference_system package's unit tests call
+# ament_target_dependencies() inside its if(BUILD_TESTING) block, which is not available
+# on newer ament (lyrical/Ubuntu 26.04) without an explicit find_package(ament_cmake) the
+# upstream package omits -> "Unknown CMake command ament_target_dependencies". We only need
+# the autoware_default_* BENCHMARK executables (built outside the testing block), not the
+# package's own unit tests, so disabling tests is the correct fix (not a workaround) and
+# also speeds the build. Verified the benchmark executables still build with tests off.
 colcon build --packages-up-to autoware_reference_system \
-  --cmake-args -DCMAKE_BUILD_TYPE=Release \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
   > /ws/build_refsys.log 2>&1 || { echo "reference-system build FAILED:"; tail -60 /ws/build_refsys.log; exit 1; }
 safe_source /ws/install/setup.bash
 echo "  build OK"
