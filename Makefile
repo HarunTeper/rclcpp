@@ -68,3 +68,13 @@ autoware-smoke: autoware-build
 
 autoware-shell:
 	$(COMPOSE) run --rm autoware bash
+
+# Lyrical Autoware macro-benchmark. run.sh builds the bind-mounted rclcpp = the HOST
+# tree, so the host's rclcpp/ must be on fix/mte-starvation-lyrical first. Caller is
+# responsible for that checkout (see docker/run-autoware-lyrical.sh which automates it).
+autoware-lyrical-build:
+	$(COMPOSE) build autoware-lyrical
+
+autoware-lyrical-smoke: autoware-lyrical-build
+	$(COMPOSE) run --rm autoware-lyrical bash -lc '\
+	  bash /ws/src/rclcpp_fork/docker/autoware/run.sh $(AW_DURATION) $(AW_RUNS)'
