@@ -1,6 +1,15 @@
 COMPOSE = docker compose -f docker/compose.yaml
 
-.PHONY: lyrical-build lyrical-shell humble-build humble-shell jazzy-build jazzy-shell jazzy-test
+# Benchmark phase (Phase 4-5) knobs:
+#   BENCH_REPS   google-benchmark repetitions for run-comparison.sh (default 5)
+#   AW_DURATION  autoware per-run duration seconds (smoke=5, paper=600)
+#   AW_RUNS      autoware repetitions (paper=5)
+BENCH_REPS  ?= 5
+AW_DURATION ?= 5
+AW_RUNS     ?= 1
+
+.PHONY: lyrical-build lyrical-shell humble-build humble-shell jazzy-build jazzy-shell jazzy-test \
+        compare-lyrical compare-jazzy autoware-build autoware-smoke autoware-shell
 lyrical-build:
 	$(COMPOSE) build lyrical
 	$(COMPOSE) run --rm lyrical bash -lc '\
@@ -38,3 +47,24 @@ jazzy-test:
 	  colcon build --packages-select rclcpp --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo && \
 	  colcon test --packages-select rclcpp --ctest-args -R test_multi_threaded_executor && \
 	  colcon test-result --verbose'
+
+# --- Phase 4-5 micro-benchmark + 3-way comparison -----------------------------
+# Builds the benchmark from the pristine upstream ref and the fix ref, runs the
+# micro-benchmark + starvation tests on each, renders docker/results/comparison-<distro>.md.
+# Requires a clean working tree (the harness swaps rclcpp/ between refs).
+compare-lyrical:
+	bash docker/run-comparison.sh lyrical fix/mte-starvation-lyrical upstream/lyrical $(BENCH_REPS)
+
+compare-jazzy:
+	bash docker/run-comparison.sh jazzy fix/mte-starvation-jazzy upstream/jazzy $(BENCH_REPS)
+
+# --- Phase 5.2 Autoware reference-system macro-benchmark ----------------------
+autoware-build:
+	$(COMPOSE) build autoware
+
+autoware-smoke: autoware-build
+	$(COMPOSE) run --rm autoware bash -lc '\
+	  /ws/src/rclcpp_fork/docker/autoware/run.sh $(AW_DURATION) $(AW_RUNS)'
+
+autoware-shell:
+	$(COMPOSE) run --rm autoware bash

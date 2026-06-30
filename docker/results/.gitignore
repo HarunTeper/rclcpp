@@ -1,0 +1,6 @@
+# Transient harness intermediates — regenerated each run, not worth versioning.
+*.json.raw
+run-*.log
+# Keep the committed deliverables: bench_*.json, comparison-*.md, starvation-*.txt,
+# autoware-latency-*.csv (these are the recorded measurements).
+!.gitkeep
