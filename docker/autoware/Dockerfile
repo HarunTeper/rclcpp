@@ -29,9 +29,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Python reporting deps used by reference_system_py (psrecord/bokeh for memory+plots,
 # pandas/jinja2 for the summary tables). --break-system-packages: ROS images are PEP668.
+# bokeh pinned <3: the reference-system's report.py uses the bokeh 2.x figure(plot_width=...)
+# API, removed in bokeh 3.x — with bokeh 3 the HTML-report step of benchmark.py throws
+# (AttributeError plot_width). We parse latency from std_output.log ourselves so the report
+# isn't needed, but pinning keeps benchmark.py exiting clean (no alarming traceback).
 RUN pip3 install --no-cache-dir --break-system-packages \
-      psrecord bokeh pandas jinja2 || \
-    pip3 install --no-cache-dir psrecord bokeh pandas jinja2
+      psrecord 'bokeh<3' pandas jinja2 || \
+    pip3 install --no-cache-dir psrecord 'bokeh<3' pandas jinja2
 
 WORKDIR /ws
 # rclcpp source is bind-mounted at runtime to /ws/src/rclcpp_fork (see compose).

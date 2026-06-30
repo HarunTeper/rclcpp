@@ -25,6 +25,11 @@ REF_SRC=/ws/src/reference-system
 RESULTS=/ws/install/autoware-results
 mkdir -p "$RESULTS"
 
+# ROS setup.bash files reference unbound vars (e.g. AMENT_TRACE_SETUP_FILES) and are
+# NOT `set -u`-clean, so sourcing them under `set -euo pipefail` aborts. Source with
+# nounset temporarily disabled (the standard ROS-in-strict-bash workaround).
+safe_source() { set +u; source "$1"; set -u; }
+
 echo "=== [autoware/$DISTRO] step 1: clone reference-system (if absent) ==="
 if [[ ! -d "$REF_SRC/.git" ]]; then
   git clone --depth 1 https://github.com/ros-realtime/reference-system "$REF_SRC"
@@ -34,14 +39,29 @@ echo "=== step 2: inject EventsCBGExecutor variant (idempotent) ==="
 EXE_DIR="$REF_SRC/autoware_reference_system/src/ros2/executor"
 cp -f /ws/src/rclcpp_fork/docker/autoware/autoware_default_events.cpp "$EXE_DIR/autoware_default_events.cpp"
 CMAKE="$REF_SRC/autoware_reference_system/CMakeLists.txt"
+# CRITICAL: add_benchmark_executable() only registers the target for auto-install via
+# ament_auto_package(), which is the LAST line of the CMakeLists and installs only what
+# was registered BEFORE it. Appending our line to the END of the file compiles the binary
+# but registers it too late -> it lands in /ws/build but never /ws/install. So we must
+# INSERT the registration BEFORE the ament_auto_package(...) call, not append it.
 if ! grep -q 'autoware_default_events' "$CMAKE"; then
-  cat >> "$CMAKE" <<'EOF'
-
-# --- Added for MTE-starvation-fix comparison: EventsCBGExecutor variant ---
-add_benchmark_executable(autoware_default_events
-  src/ros2/executor/autoware_default_events.cpp)
-EOF
-  echo "  injected add_benchmark_executable(autoware_default_events)"
+  python3 - "$CMAKE" <<'PY'
+import sys, re
+path = sys.argv[1]
+text = path_text = open(path).read()
+inject = (
+    "# --- Added for MTE-starvation-fix comparison: EventsCBGExecutor variant ---\n"
+    "add_benchmark_executable(autoware_default_events\n"
+    "  src/ros2/executor/autoware_default_events.cpp)\n\n"
+)
+m = re.search(r'^\s*ament_auto_package\s*\(', text, re.M)
+if not m:
+    sys.stderr.write("ERROR: ament_auto_package( not found in CMakeLists — cannot inject\n")
+    sys.exit(1)
+text = text[:m.start()] + inject + text[m.start():]
+open(path, "w").write(text)
+print("  injected add_benchmark_executable(autoware_default_events) before ament_auto_package()")
+PY
 else
   echo "  already injected"
 fi
@@ -51,16 +71,16 @@ mkdir -p /ws/src/pkg
 ln -sfn /ws/src/rclcpp_fork/rclcpp /ws/src/pkg/rclcpp
 
 echo "=== step 4: build rclcpp (Release) + reference-system overlay ==="
-source "/opt/ros/$DISTRO/setup.bash"
+safe_source "/opt/ros/$DISTRO/setup.bash"
 # Build our rclcpp first so the reference-system links against the FIXED executor.
 colcon build --packages-select rclcpp \
   --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
   > /ws/build_rclcpp.log 2>&1 || { echo "rclcpp build FAILED:"; tail -40 /ws/build_rclcpp.log; exit 1; }
-source /ws/install/setup.bash
+safe_source /ws/install/setup.bash
 colcon build --packages-up-to autoware_reference_system \
   --cmake-args -DCMAKE_BUILD_TYPE=Release \
   > /ws/build_refsys.log 2>&1 || { echo "reference-system build FAILED:"; tail -60 /ws/build_refsys.log; exit 1; }
-source /ws/install/setup.bash
+safe_source /ws/install/setup.bash
 echo "  build OK"
 
 # Sanity: the events executable must exist (proves EventsCBGExecutor compiled+linked).

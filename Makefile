@@ -64,7 +64,7 @@ autoware-build:
 
 autoware-smoke: autoware-build
 	$(COMPOSE) run --rm autoware bash -lc '\
-	  /ws/src/rclcpp_fork/docker/autoware/run.sh $(AW_DURATION) $(AW_RUNS)'
+	  bash /ws/src/rclcpp_fork/docker/autoware/run.sh $(AW_DURATION) $(AW_RUNS)'
 
 autoware-shell:
 	$(COMPOSE) run --rm autoware bash
