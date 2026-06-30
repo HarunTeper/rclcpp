@@ -1,4 +1,4 @@
 distro,executor,run,duration_s,last_ms,min_ms,max_ms,mean_ms,stddev_ms,p99_ms,drops
-jazzy,autoware_default_events,1,5,12.7212,6.70444,17.4839,12.5445,2.79319,,0
-jazzy,autoware_default_multithreaded,1,5,13.2763,8.38538,18.7616,14.0208,2.05413,,0
-jazzy,autoware_default_singlethreaded,1,5,16.3285,8.23575,27.6462,16.1057,4.42086,,0
+jazzy,autoware_default_events,1,600,11.2479,7.53061,19.9655,12.9199,2.18359,,0
+jazzy,autoware_default_multithreaded,1,600,14.0288,8.19455,20.0535,13.5589,2.0565,,0
+jazzy,autoware_default_singlethreaded,1,600,13.2793,7.9128,17.2414,15.5431,1.90267,,0
