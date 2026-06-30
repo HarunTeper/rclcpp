@@ -190,7 +190,7 @@ def eventscbg_starv():
 
 
 # --- scenarios to report ------------------------------------------------------
-# Each tuple: (display label, fixed-key prefix, mte-key, cbg-key, st-key)
+# Each tuple: (display label, single-thread key, multi-thread key, cbg key)
 # google-benchmark run_name for a BENCHMARK_F(Fixture, name) is "Fixture/name".
 SCENARIOS = [
     ("spin_some (basic)",

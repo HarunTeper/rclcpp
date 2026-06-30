@@ -22,9 +22,15 @@ RESULTS="${REPO_ROOT}/docker/results"
 COMPOSE="docker compose -f docker/compose.yaml"
 mkdir -p "$RESULTS"
 
-if ! git diff --quiet || ! git diff --cached --quiet; then
-  echo "ERROR: tracked changes present. Commit/stash first (we swap rclcpp/ to lyrical)." >&2
-  git status --short >&2; exit 1
+# Reject ANY entry under rclcpp/ — tracked modification OR untracked non-ignored file.
+# The swap below runs `git clean -qfd rclcpp`, which would DELETE untracked files there
+# with no warning. `git status --porcelain -- rclcpp` lists both but respects .gitignore.
+if [ -n "$(git status --porcelain -- rclcpp)" ]; then
+  echo "ERROR: uncommitted changes under rclcpp/ (tracked or untracked). The harness swaps and"
+  echo "       'git clean -qfd rclcpp's the rclcpp/ tree between refs, which would DELETE them."
+  echo "       Commit/stash/remove them first." >&2
+  git status --porcelain -- rclcpp >&2
+  exit 1
 fi
 START_REF="$(git symbolic-ref --quiet --short HEAD || git rev-parse HEAD)"
 echo ">>> starting ref: ${START_REF}; swapping rclcpp/ -> ${FIXED_REF}"

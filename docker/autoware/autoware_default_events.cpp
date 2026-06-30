@@ -16,6 +16,7 @@
 // MTE-starvation-fix comparison (Phase 5). Identical to
 // autoware_default_multithreaded.cpp except the executor type. The latency KPI
 // is emitted by the shared node code via stdout, so no other change is needed.
+#include <cstring>  // strncmp
 #include <memory>
 #include <vector>
 

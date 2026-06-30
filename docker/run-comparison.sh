@@ -53,10 +53,17 @@ COMPOSE="docker compose -f docker/compose.yaml"
 # NOT on pristine upstream — a full `git checkout upstream/X` would delete them and
 # break `docker compose -f docker/compose.yaml`. Pathspec checkout of rclcpp/ avoids
 # that: the container only builds rclcpp/ anyway.)
-# Untracked files (like this harness) survive checkouts. Block only on tracked changes.
-if ! git diff --quiet || ! git diff --cached --quiet; then
-  echo "ERROR: tracked changes present. Commit/stash before running (we swap rclcpp/ between refs)." >&2
-  git status --short >&2
+# Untracked files OUTSIDE rclcpp/ (like this harness) survive checkouts, so we don't
+# block on them. But ANY entry under rclcpp/ — tracked modification OR untracked
+# non-ignored file — is a problem: checkout_rclcpp() runs `git clean -qfd rclcpp`,
+# which DELETES untracked files there with no warning (data loss). `git status
+# --porcelain -- rclcpp` lists both, while respecting .gitignore (build dirs etc.
+# are not flagged) — exactly the scope we must reject.
+if [ -n "$(git status --porcelain -- rclcpp)" ]; then
+  echo "ERROR: uncommitted changes under rclcpp/ (tracked or untracked). The harness swaps and"
+  echo "       'git clean -qfd rclcpp's the rclcpp/ tree between refs, which would DELETE them."
+  echo "       Commit/stash/remove them first." >&2
+  git status --porcelain -- rclcpp >&2
   exit 1
 fi
 START_REF="$(git symbolic-ref --quiet --short HEAD || git rev-parse HEAD)"
@@ -98,10 +105,9 @@ trap restore EXIT
 
 # In-container command: clean Release build of just the benchmark target's deps,
 # then run benchmark_executor -> JSON, then run the starvation tests -> log.
-# $1 = json out basename, $2 = starvation log basename (paths under /ws/install scratch
-# won't persist across builds, so we copy results to the bind-mounted source tree's
-# docker/results, which IS writable? NO — mount is :ro. So we cat to stdout and the
-# host captures it via the compose `run` stdout redirection.)
+# The source mount is :ro, so the benchmark JSON is captured via the compose `run`
+# stdout redirection on the host (see the `> "${RESULTS}/..."` below) rather than
+# written inside the container.
 build_and_measure() {
   local label="$1"   # "fixed" | "baseline"
   echo ""

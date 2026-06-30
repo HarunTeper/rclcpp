@@ -62,9 +62,17 @@ compare-jazzy:
 autoware-build:
 	$(COMPOSE) build autoware
 
+# Capture the jazzy latency CSV to the host (run.sh cats it to stdout; the source mount
+# is :ro so we tee the container stdout to a log and awk the CSV block out — same pattern
+# as docker/run-autoware-lyrical.sh. Makes autoware-latency-jazzy.csv reproducible via make.)
 autoware-smoke: autoware-build
+	mkdir -p docker/results
 	$(COMPOSE) run --rm autoware bash -lc '\
-	  bash /ws/src/rclcpp_fork/docker/autoware/run.sh $(AW_DURATION) $(AW_RUNS)'
+	  bash /ws/src/rclcpp_fork/docker/autoware/run.sh $(AW_DURATION) $(AW_RUNS)' \
+	  | tee docker/results/autoware-smoke-jazzy.log
+	awk '/^distro,executor,run/{p=1} p' docker/results/autoware-smoke-jazzy.log \
+	  | grep -E '^(distro|jazzy)' > docker/results/autoware-latency-jazzy.csv || true
+	@echo "wrote docker/results/autoware-latency-jazzy.csv"
 
 autoware-shell:
 	$(COMPOSE) run --rm autoware bash

@@ -19,9 +19,13 @@ results_dir, duration, distro = sys.argv[1], sys.argv[2], sys.argv[3]
 root = pathlib.Path(results_dir)
 
 # hot path latency: 12.34ms [min=1.0ms, max=30.0ms, average=11.0ms, deviation=2.0ms]
+# Each number capture also accepts signs and scientific notation (e.g. 1.2e+06, 3.4e-05)
+# — the reference-system uses default double (%g-style) formatting, which can emit those
+# for a degenerate/long run; a plain ([\d.]+) would fail to match and silently drop the row.
+_NUM = r"[-+]?[\d.]+(?:[eE][-+]?\d+)?"
 LAT_RE = re.compile(
-    r"hot path latency:\s*([\d.]+)ms\s*\[min=([\d.]+)ms,\s*max=([\d.]+)ms,\s*"
-    r"average=([\d.]+)ms,\s*deviation=([\d.]+)ms\]", re.I)
+    rf"hot path latency:\s*({_NUM})ms\s*\[min=({_NUM})ms,\s*max=({_NUM})ms,\s*"
+    rf"average=({_NUM})ms,\s*deviation=({_NUM})ms\]", re.I)
 DROP_RE = re.compile(r"hot path drops:\s*(\d+)", re.I)
 
 writer = csv.writer(sys.stdout)
