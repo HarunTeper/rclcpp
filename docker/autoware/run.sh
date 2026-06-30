@@ -66,6 +66,37 @@ else
   echo "  already injected"
 fi
 
+# step 2b: drop reference-system executor variants whose executor class no longer exists
+# in the target rclcpp, else autoware_reference_system fails to COMPILE. Lyrical (rclcpp
+# 32.0.0) removed StaticSingleThreadedExecutor; jazzy still has it. We only need
+# multithreaded (fixed MTE) + events (EventsCBG) + singlethreaded (baseline) anyway.
+# Comment out an add_benchmark_executable(<target> ...) call if its source references a
+# class absent from the installed rclcpp headers.
+drop_variant_if_class_missing() {
+  local target="$1" cls="$2"
+  # Authoritative check: the system rclcpp headers for this distro. Our fix changes MTE
+  # internals only, never adds/removes executor classes, so the distro headers tell us
+  # whether <cls> exists (e.g. StaticSingleThreadedExecutor: present on jazzy, gone on lyrical).
+  if ! grep -rqs "${cls}" /opt/ros/$DISTRO/include/ 2>/dev/null; then
+    # class not found in target rclcpp -> comment out the registration (2-line call)
+    python3 - "$CMAKE" "$target" <<'PY'
+import sys, re
+path, target = sys.argv[1], sys.argv[2]
+text = open(path).read()
+# match: add_benchmark_executable(<target>\n  <src>) possibly spanning 2 lines
+pat = re.compile(r'(?m)^[ \t]*add_benchmark_executable\(\s*' + re.escape(target) + r'\b[^)]*\)')
+new, n = pat.subn(lambda mm: '# [MTE-bench] disabled (executor class missing in this rclcpp):\n# ' +
+                  mm.group(0).replace('\n', '\n# '), text)
+if n:
+    open(path, 'w').write(new)
+    print(f"  disabled add_benchmark_executable({target}) — class not in target rclcpp")
+else:
+    print(f"  (no add_benchmark_executable({target}) to disable)")
+PY
+  fi
+}
+drop_variant_if_class_missing autoware_default_staticsinglethreaded StaticSingleThreadedExecutor
+
 echo "=== step 3: link our fixed rclcpp into the workspace ==="
 mkdir -p /ws/src/pkg
 ln -sfn /ws/src/rclcpp_fork/rclcpp /ws/src/pkg/rclcpp
