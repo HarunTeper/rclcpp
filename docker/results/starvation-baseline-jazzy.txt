@@ -1,0 +1,30 @@
+ Container docker-jazzy-run-62d1a82c58df Creating 
+ Container docker-jazzy-run-62d1a82c58df Created 
+Running main() from /opt/ros/jazzy/src/gtest_vendor/src/gtest_main.cc
+Note: Google Test filter = *starvation*:*timer_over_take*
+[==========] Running 3 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 3 tests from TestMultiThreadedExecutor
+[ RUN      ] TestMultiThreadedExecutor.timer_over_take
+[       OK ] TestMultiThreadedExecutor.timer_over_take (6013 ms)
+[ RUN      ] TestMultiThreadedExecutor.starvation_mutually_exclusive_timers
+/ws/src/pkg/rclcpp/test/rclcpp/executors/test_multi_threaded_executor.cpp:143: Failure
+Expected: (count_one.load()) > (0), actual: 0 vs 0
+timer_one never executed (starved)
+
+/ws/src/pkg/rclcpp/test/rclcpp/executors/test_multi_threaded_executor.cpp:145: Failure
+Expected: (std::abs(count_one.load() - count_two.load())) <= (2), actual: 20 vs 2
+counts diverged: one=0 two=20
+
+[  FAILED  ] TestMultiThreadedExecutor.starvation_mutually_exclusive_timers (415 ms)
+[ RUN      ] TestMultiThreadedExecutor.starvation_eventscbg_passes
+[       OK ] TestMultiThreadedExecutor.starvation_eventscbg_passes (796 ms)
+[----------] 3 tests from TestMultiThreadedExecutor (7225 ms total)
+
+[----------] Global test environment tear-down
+[==========] 3 tests from 1 test suite ran. (7231 ms total)
+[  PASSED  ] 2 tests.
+[  FAILED  ] 1 test, listed below:
+[  FAILED  ] TestMultiThreadedExecutor.starvation_mutually_exclusive_timers
+
+ 1 FAILED TEST
