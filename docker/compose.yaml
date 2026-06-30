@@ -27,6 +27,44 @@ services:
       - jazzy-install:/ws/install
     working_dir: /ws
     command: bash
+  # Autoware reference-system macro-benchmark (Phase 5.2). Builds fixed rclcpp +
+  # ros-realtime/reference-system with an added EventsCBGExecutor variant. ROS_DISTRO
+  # must be wait_result_ era (EventsCBGExecutor exists): jazzy (default) or lyrical.
+  # Override distro: `docker compose build --build-arg ROS_DISTRO=lyrical autoware`.
+  autoware:
+    build:
+      context: .
+      dockerfile: autoware/Dockerfile
+      args:
+        ROS_DISTRO: jazzy
+    image: mte-starvation/autoware-jazzy
+    environment:
+      ROS_DISTRO: jazzy
+    volumes:
+      - ../:/ws/src/rclcpp_fork:ro
+      - autoware-build:/ws/build
+      - autoware-install:/ws/install
+    working_dir: /ws
+    command: bash
+  # Lyrical variant of the Autoware macro-benchmark (separate image + volumes so jazzy
+  # and lyrical don't cross-contaminate). NOTE: run.sh builds the bind-mounted rclcpp,
+  # which reflects the HOST tree — checkout fix/mte-starvation-lyrical's rclcpp/ before
+  # running this (the Makefile autoware-lyrical-smoke target handles it).
+  autoware-lyrical:
+    build:
+      context: .
+      dockerfile: autoware/Dockerfile
+      args:
+        ROS_DISTRO: lyrical
+    image: mte-starvation/autoware-lyrical
+    environment:
+      ROS_DISTRO: lyrical
+    volumes:
+      - ../:/ws/src/rclcpp_fork:ro
+      - autoware-lyrical-build:/ws/build
+      - autoware-lyrical-install:/ws/install
+    working_dir: /ws
+    command: bash
 volumes:
   lyrical-build:
   lyrical-install:
@@ -34,3 +72,7 @@ volumes:
   humble-install:
   jazzy-build:
   jazzy-install:
+  autoware-build:
+  autoware-install:
+  autoware-lyrical-build:
+  autoware-lyrical-install:
