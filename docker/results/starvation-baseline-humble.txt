@@ -1,0 +1,26 @@
+ Container docker-humble-run-e6d833bde08e Creating 
+ Container docker-humble-run-e6d833bde08e Created 
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+Note: Google Test filter = *starvation*:*timer_over_take*
+[==========] Running 2 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 2 tests from TestMultiThreadedExecutor
+[ RUN      ] TestMultiThreadedExecutor.timer_over_take
+[       OK ] TestMultiThreadedExecutor.timer_over_take (6011 ms)
+[ RUN      ] TestMultiThreadedExecutor.starvation_mutually_exclusive_timers
+/ws/src/pkg/rclcpp/test/rclcpp/executors/test_multi_threaded_executor.cpp:151: Failure
+Expected: (count_two.load()) > (0), actual: 0 vs 0
+timer_two never executed (starved)
+/ws/src/pkg/rclcpp/test/rclcpp/executors/test_multi_threaded_executor.cpp:152: Failure
+Expected: (std::abs(count_one.load() - count_two.load())) <= (2), actual: 20 vs 2
+counts diverged: one=20 two=0
+[  FAILED  ] TestMultiThreadedExecutor.starvation_mutually_exclusive_timers (415 ms)
+[----------] 2 tests from TestMultiThreadedExecutor (6426 ms total)
+
+[----------] Global test environment tear-down
+[==========] 2 tests from 1 test suite ran. (6432 ms total)
+[  PASSED  ] 1 test.
+[  FAILED  ] 1 test, listed below:
+[  FAILED  ] TestMultiThreadedExecutor.starvation_mutually_exclusive_timers
+
+ 1 FAILED TEST
