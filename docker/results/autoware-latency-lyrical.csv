@@ -1,4 +1,4 @@
 distro,executor,run,duration_s,last_ms,min_ms,max_ms,mean_ms,stddev_ms,p99_ms,drops
-lyrical,autoware_default_events,1,5,14.0336,7.91035,18.301,12.83,1.72829,,0
-lyrical,autoware_default_multithreaded,1,5,13.2949,10.3046,17.7222,13.7357,1.41211,,0
-lyrical,autoware_default_singlethreaded,1,5,25.3958,10.0139,30.2325,18.6829,6.13768,,0
+lyrical,autoware_default_events,1,600,8.71706,6.64471,20.9203,12.5054,2.39747,,0
+lyrical,autoware_default_multithreaded,1,600,13.0679,6.87765,22.1144,12.9175,2.33313,,0
+lyrical,autoware_default_singlethreaded,1,600,13.7109,7.94042,28.0335,16.528,5.07803,,0
