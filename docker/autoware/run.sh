@@ -129,15 +129,41 @@ fi
 echo "  events executable: $EVENTS_EXE"
 
 echo "=== step 5: run benchmark — duration=${DURATION}s runs=${RUNS} exes='${EXE_GLOB}' ==="
-BENCH_PY="$(ros2 pkg prefix --share autoware_reference_system)/scripts/benchmark.py"
+# We run each executable DIRECTLY rather than via the reference-system's benchmark.py.
+# benchmark.py imports bokeh at module load and generates an HTML report — and bokeh's
+# version compatibility is a moving target across distros (bokeh3 drops figure(plot_width=);
+# bokeh2 hits numpy.bool8 removed on lyrical/py3.14). Either way it can abort before the
+# executors even run. The latency KPI is just the executable's stdout on shutdown, so we
+# replicate benchmark.py's run logic (start exe, sleep, SIGINT, it prints 'hot path
+# latency: ...') ourselves — zero bokeh dependency, identical std_output.log layout that
+# parse-autoware.py already expects: <RUNDIR>/<dur>s/<rmw>/<exe>/std_output.log.
+RMW=rmw_cyclonedds_cpp
+EXE_LIBDIR="$(dirname "$EVENTS_EXE")"   # /ws/install/.../lib/autoware_reference_system
+IFS=',' read -ra EXES <<< "$EXE_GLOB"
 for ((r=1; r<=RUNS; r++)); do
   RUNDIR="$RESULTS/run_${r}"
-  mkdir -p "$RUNDIR"
   echo "  --- run $r/$RUNS -> $RUNDIR ---"
-  # std trace only (latency via parsed stdout); single rmw for determinism.
-  python3 "$BENCH_PY" "$DURATION" "$EXE_GLOB" \
-    --trace_types std --rmws rmw_cyclonedds_cpp --logdir "$RUNDIR" \
-    > "$RUNDIR/benchmark_py.log" 2>&1 || echo "  (benchmark.py returned nonzero — check $RUNDIR/benchmark_py.log)"
+  for exe in "${EXES[@]}"; do
+    exe="${exe// /}"                    # trim spaces
+    EXE_PATH="$EXE_LIBDIR/$exe"
+    OUTDIR="$RUNDIR/${DURATION}s/$RMW/$exe"
+    mkdir -p "$OUTDIR"
+    if [[ ! -x "$EXE_PATH" ]]; then
+      echo "    [skip] $exe not built (path $EXE_PATH)"; continue
+    fi
+    echo "    running $exe for ${DURATION}s ..."
+    RMW_IMPLEMENTATION="$RMW" "$EXE_PATH" > "$OUTDIR/std_output.log" 2>&1 &
+    PID=$!
+    sleep "$DURATION"
+    # The command nodes print 'hot path latency: ...' on shutdown signal. Send SIGINT
+    # (rclcpp's default handler), then SIGTERM/SIGKILL as fallback, and let it flush.
+    kill -INT "$PID" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do kill -0 "$PID" 2>/dev/null || break; sleep 1; done
+    kill -TERM "$PID" 2>/dev/null || true
+    sleep 1
+    kill -KILL "$PID" 2>/dev/null || true
+    wait "$PID" 2>/dev/null || true
+  done
 done
 
 echo "=== step 6: extract latency CSV from std_output.log files ==="
