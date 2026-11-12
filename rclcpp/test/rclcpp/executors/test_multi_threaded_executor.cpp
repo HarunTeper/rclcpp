@@ -140,6 +140,5 @@ TEST_F(TestMultiThreadedExecutor, mutually_exclusive_timers_starvation) {
   executor.add_node(node);
   executor.spin();
 
-  EXPECT_GE(count_one, 5);
-  EXPECT_GE(count_two, 5);
+  EXPECT_LE(std::abs(count_one - count_two), 2);
 }
