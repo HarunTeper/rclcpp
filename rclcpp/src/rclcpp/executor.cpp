@@ -83,8 +83,12 @@ public:
       if (first_of_group != blocked_entities.end()) {
         blocked_entities.erase(first_of_group);
       }
-      last_executed_[callback_group] = entity;
+      set_last_executed(callback_group, entity);
       return true;
+    }
+    if (!callback_group->can_be_taken_from()) {
+      // From now on the entities of this group take turns.
+      last_executed_.emplace(callback_group, std::weak_ptr<void>());
     }
     auto it = std::find_if(
       blocked_entities.begin(), blocked_entities.end(),
@@ -150,25 +154,35 @@ public:
           break;
       }
       any_executable.callback_group = callback_group;
-      last_executed_[callback_group] = entity;
+      set_last_executed(callback_group, entity);
       return true;
     }
     return false;
   }
 
-  /// Get the entity of a mutually exclusive callback group that was executed last.
+  /// Get the entity of a callback group that was executed last.
   std::shared_ptr<void>
   last_executed(const rclcpp::CallbackGroup::SharedPtr & callback_group)
   {
-    if (callback_group->type() != rclcpp::CallbackGroupType::MutuallyExclusive) {
-      return nullptr;
+    auto it = last_executed_.find(callback_group);
+    return it != last_executed_.end() ? it->second.lock() : nullptr;
+  }
+
+  void
+  set_last_executed(
+    const rclcpp::CallbackGroup::SharedPtr & callback_group,
+    const std::shared_ptr<void> & entity)
+  {
+    auto it = last_executed_.find(callback_group);
+    if (it != last_executed_.end()) {
+      it->second = entity;
     }
-    return last_executed_[callback_group].lock();
   }
 
   /// Ready entities that were skipped because their callback group was in use, oldest first.
   std::list<BlockedEntity> blocked_entities;
 
+  /// Only has the callback groups in which an entity was blocked at least once.
   std::map<rclcpp::CallbackGroup::WeakPtr, std::weak_ptr<void>,
     std::owner_less<rclcpp::CallbackGroup::WeakPtr>> last_executed_;
 };
